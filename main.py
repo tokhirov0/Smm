@@ -3,164 +3,111 @@ import requests
 from flask import Flask, request
 import telebot
 from telebot import types
-from dotenv import load_dotenv
 
-# .env faylni yuklash
-load_dotenv()
-
-TOKEN = os.environ.get("TOKEN")
-ADMIN = os.environ.get("ADMIN")            # Telegram username
-CHANNEL = os.environ.get("CHANNEL")        # Majburiy kanal (admin qo‘shadi)
-GROUP = os.environ.get("GROUP")            # Majburiy guruh (admin qo‘shadi)
-API_KEY = os.environ.get("API_KEY")        # SMM API key
+# ---------------- CONFIG ----------------
+TOKEN = "BOT_TOKENINGIZ"       # Admin tomonidan o‘rnatilgan token
+ADMIN = "admin_username"       # Admin Telegram username
+CHANNELS = []                  # Admin istagicha qo‘shadi
+GROUPS = []                    # Admin istagicha qo‘shadi
+SMM_API_KEY = "SMM_API_KEY"    # Uzbek-seen.uz API key
 PORT = int(os.environ.get("PORT", 5000))
+# --------------------------------------
 
 bot = telebot.TeleBot(TOKEN)
 server = Flask(__name__)
 
-# Inline tugmalar
-def admin_menu():
+# Inline menu yaratish
+def inline_menu():
     menu = types.InlineKeyboardMarkup()
-    menu.add(
-        types.InlineKeyboardButton("➕ Kanal qo‘shish", callback_data="add_channel"),
-        types.InlineKeyboardButton("➖ Kanal o‘chirish", callback_data="remove_channel")
-    )
-    menu.add(
-        types.InlineKeyboardButton("➕ Guruh qo‘shish", callback_data="add_group"),
-        types.InlineKeyboardButton("➖ Guruh o‘chirish", callback_data="remove_group")
-    )
-    menu.add(
-        types.InlineKeyboardButton("💰 Balans", callback_data="balance"),
-        types.InlineKeyboardButton("📦 Buyurtmalar", callback_data="orders")
-    )
+    menu.add(types.InlineKeyboardButton("📣 Kanal qo‘shish", callback_data="add_channel"))
+    menu.add(types.InlineKeyboardButton("➖ Kanal o‘chirish", callback_data="del_channel"))
+    menu.add(types.InlineKeyboardButton("👥 Guruh qo‘shish", callback_data="add_group"))
+    menu.add(types.InlineKeyboardButton("➖ Guruh o‘chirish", callback_data="del_group"))
+    menu.add(types.InlineKeyboardButton("💰 Buyurtmalar", callback_data="orders"))
     return menu
 
-def user_menu():
-    menu = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    menu.add("📦 Buyurtma qo‘yish", "💰 Balansni tekshirish")
-    return menu
-
-# Admin faqat o‘z username orqali ishlaydi
-def is_admin(username):
-    return username == ADMIN
-
-# SMM API bilan ishlash
-SMM_API_URL = "https://uzbek-seen.uz/api/v2"
-
-def get_services():
-    resp = requests.post(SMM_API_URL, data={"key": API_KEY, "action": "services"})
-    if resp.ok:
-        return resp.json()
-    return []
-
-def add_order(service_id, link, quantity):
-    resp = requests.post(SMM_API_URL, data={
-        "key": API_KEY,
-        "action": "add",
-        "service": service_id,
-        "link": link,
-        "quantity": quantity
-    })
-    if resp.ok:
-        return resp.json()
-    return {}
-
-def get_balance():
-    resp = requests.post(SMM_API_URL, data={"key": API_KEY, "action": "balance"})
-    if resp.ok:
-        return resp.json()
-    return {}
-
-def get_orders():
-    resp = requests.post(SMM_API_URL, data={"key": API_KEY, "action": "orders"})
-    if resp.ok:
-        return resp.json()
-    return []
-
-# /start
+# Start komandasi
 @bot.message_handler(commands=["start"])
-def start(message):
-    if is_admin(message.from_user.username):
-        bot.send_message(message.chat.id, "Salom Admin! Botga xush kelibsiz.", reply_markup=admin_menu())
-    else:
-        bot.send_message(message.chat.id, "Salom! SMM xizmatlar botiga xush kelibsiz.", reply_markup=user_menu())
+def start_handler(message):
+    user_id = message.chat.id
+    bot.send_message(user_id, "👋 Salom! SMM botga xush kelibsiz.", reply_markup=inline_menu())
 
-# Inline tugmalar
+# Inline tugmalarni boshqarish
 @bot.callback_query_handler(func=lambda call: True)
-def callback_inline(call):
-    chat_id = call.message.chat.id
-    username = call.from_user.username
-
-    if not is_admin(username):
-        bot.answer_callback_query(call.id, "Bu tugma faqat admin uchun!")
-        return
-
+def callback_handler(call):
+    user_id = call.message.chat.id
     if call.data == "add_channel":
-        bot.send_message(chat_id, "Majburiy kanal username sini yuboring (misol: @kanal):")
-        bot.register_next_step_handler_by_chat_id(chat_id, add_channel)
-    elif call.data == "remove_channel":
-        global CHANNEL
-        CHANNEL = None
-        bot.send_message(chat_id, "Kanal o‘chirildi!")
+        if user_id != ADMIN_ID:  # Admin tekshirish
+            bot.send_message(user_id, "❌ Faqat admin bajarishi mumkin")
+            return
+        bot.send_message(user_id, "Kanal username (@username) ni yuboring:")
+        bot.register_next_step_handler_by_chat_id(user_id, add_channel_step)
+    elif call.data == "del_channel":
+        if user_id != ADMIN_ID:
+            bot.send_message(user_id, "❌ Faqat admin bajarishi mumkin")
+            return
+        bot.send_message(user_id, "O‘chirmoqchi bo‘lgan kanalni yuboring (@username):")
+        bot.register_next_step_handler_by_chat_id(user_id, del_channel_step)
     elif call.data == "add_group":
-        bot.send_message(chat_id, "Majburiy guruh username sini yuboring (misol: @guruh):")
-        bot.register_next_step_handler_by_chat_id(chat_id, add_group)
-    elif call.data == "remove_group":
-        global GROUP
-        GROUP = None
-        bot.send_message(chat_id, "Guruh o‘chirildi!")
-    elif call.data == "balance":
-        bal = get_balance()
-        bot.send_message(chat_id, f"💰 Balans: {bal.get('balance','0')} {bal.get('currency','UZS')}")
+        if user_id != ADMIN_ID:
+            bot.send_message(user_id, "❌ Faqat admin bajarishi mumkin")
+            return
+        bot.send_message(user_id, "Guruh username (@username) ni yuboring:")
+        bot.register_next_step_handler_by_chat_id(user_id, add_group_step)
+    elif call.data == "del_group":
+        if user_id != ADMIN_ID:
+            bot.send_message(user_id, "❌ Faqat admin bajarishi mumkin")
+            return
+        bot.send_message(user_id, "O‘chirmoqchi bo‘lgan guruhni yuboring (@username):")
+        bot.register_next_step_handler_by_chat_id(user_id, del_group_step)
     elif call.data == "orders":
-        orders = get_orders()
-        if orders:
-            text = "📦 Buyurtmalar:\n\n"
-            for o in orders:
-                text += f"ID: {o['order']}, Xizmat: {o['service']}, Status: {o['status']}\n"
-            bot.send_message(chat_id, text)
-        else:
-            bot.send_message(chat_id, "📦 Buyurtma topilmadi.")
+        show_orders(user_id)
 
-def add_channel(message):
-    global CHANNEL
-    CHANNEL = message.text
-    bot.send_message(message.chat.id, f"Kanal qo‘shildi: {CHANNEL}")
+# Kanal qo‘shish
+def add_channel_step(message):
+    CHANNELS.append(message.text)
+    bot.send_message(message.chat.id, f"✅ Kanal qo‘shildi: {message.text}")
 
-def add_group(message):
-    global GROUP
-    GROUP = message.text
-    bot.send_message(message.chat.id, f"Guruh qo‘shildi: {GROUP}")
+# Kanal o‘chirish
+def del_channel_step(message):
+    if message.text in CHANNELS:
+        CHANNELS.remove(message.text)
+        bot.send_message(message.chat.id, f"✅ Kanal o‘chirildi: {message.text}")
+    else:
+        bot.send_message(message.chat.id, "❌ Kanal topilmadi")
 
-# Foydalanuvchi tugmalar
-@bot.message_handler(func=lambda message: message.text in ["📦 Buyurtma qo‘yish","💰 Balansni tekshirish"])
-def user_actions(message):
-    chat_id = message.chat.id
-    if message.text == "📦 Buyurtma qo‘yish":
-        services = get_services()
-        text = "Xizmatlar:\n\n"
-        for s in services:
-            text += f"ID: {s['service']}, {s['name']}, Narx: {s['rate']} UZS\n"
-        bot.send_message(chat_id, text + "\nBuyurtma uchun: XizmatID Link Quantity")
-        bot.register_next_step_handler(message, create_order)
-    elif message.text == "💰 Balansni tekshirish":
-        bal = get_balance()
-        bot.send_message(chat_id, f"💰 Balans: {bal.get('balance','0')} {bal.get('currency','UZS')}")
+# Guruh qo‘shish
+def add_group_step(message):
+    GROUPS.append(message.text)
+    bot.send_message(message.chat.id, f"✅ Guruh qo‘shildi: {message.text}")
 
-def create_order(message):
+# Guruh o‘chirish
+def del_group_step(message):
+    if message.text in GROUPS:
+        GROUPS.remove(message.text)
+        bot.send_message(message.chat.id, f"✅ Guruh o‘chirildi: {message.text}")
+    else:
+        bot.send_message(message.chat.id, "❌ Guruh topilmadi")
+
+# Buyurtmalarni ko‘rsatish (API bilan)
+def show_orders(user_id):
+    url = "https://uzbek-seen.uz/api/v2"
+    params = {"key": SMM_API_KEY, "action": "orders"}
     try:
-        service_id, link, quantity = message.text.split()
-        order = add_order(service_id, link, quantity)
-        if "order" in order:
-            bot.send_message(message.chat.id, f"✅ Buyurtma qabul qilindi! Order ID: {order['order']}")
+        resp = requests.post(url, data=params).json()
+        if resp:
+            msg = "📄 Buyurtmalar:\n"
+            for order in resp:
+                msg += f"Order: {order['order']}, Service: {order['service']}, Status: {order['status']}\n"
+            bot.send_message(user_id, msg)
         else:
-            bot.send_message(message.chat.id, f"❌ Xatolik yuz berdi: {order}")
-    except:
-        bot.send_message(message.chat.id, "❌ Format xato! Misol: 1 https://t.me/username 100")
+            bot.send_message(user_id, "❌ Buyurtmalar topilmadi")
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Xato: {e}")
 
-# Flask Webhook
+# Flask webhook
 @server.route(f"/{TOKEN}", methods=["POST"])
-def getMessage():
+def webhook():
     json_str = request.get_data().decode("UTF-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
@@ -170,5 +117,6 @@ def getMessage():
 def index():
     return "SMM Bot ishlayapti! ✅", 200
 
+# Botni ishga tushurish
 if __name__ == "__main__":
     server.run(host="0.0.0.0", port=PORT)
