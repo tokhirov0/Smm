@@ -4,94 +4,112 @@ from flask import Flask, request
 import telebot
 from telebot import types
 
+# Environment Variables
 TOKEN = os.environ.get("TOKEN")
-API_KEY = os.environ.get("API_KEY")  # uzbek-seen.uz API kaliti
-CHANNEL = os.environ.get("CHANNEL")  # majburiy obuna kanali
+OWNER_ID = int(os.environ.get("OWNER"))
 
 bot = telebot.TeleBot(TOKEN)
 server = Flask(__name__)
 
-# Inline menyu
+# Global kanal
+CHANNEL = None
+
+# SMM API
+API_URL = "https://uzbek-seen.uz/api/v2"
+API_KEY = os.environ.get("API_KEY")  # .env faylga qo'yish kerak
+
+# Menyular
 def main_menu():
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📃 Xizmatlar ro'yxati", callback_data="services"))
-    markup.add(types.InlineKeyboardButton("💰 Balansni tekshirish", callback_data="balance"))
-    markup.add(types.InlineKeyboardButton("🛒 Buyurtma berish", callback_data="order"))
-    return markup
+    menu = types.InlineKeyboardMarkup()
+    menu.add(types.InlineKeyboardButton("📃 Xizmatlar", callback_data="services"))
+    menu.add(types.InlineKeyboardButton("💰 Balans", callback_data="balance"))
+    return menu
+
+# Admin kanal qo‘shish
+@bot.message_handler(commands=["setchannel"])
+def set_channel(message):
+    global CHANNEL
+    if message.chat.id == OWNER_ID:
+        args = message.text.split()
+        if len(args) == 2:
+            CHANNEL = args[1]
+            bot.reply_to(message, f"Kanal majburiy qilindi: {CHANNEL}")
+        else:
+            bot.reply_to(message, "Iltimos, kanal nomini yozing: /setchannel @kanalnomi")
+
+@bot.message_handler(commands=["removechannel"])
+def remove_channel(message):
+    global CHANNEL
+    if message.chat.id == OWNER_ID:
+        CHANNEL = None
+        bot.reply_to(message, "Majburiy kanal olib tashlandi.")
 
 # Kanalga obuna tekshirish
-def check_channel(user_id):
+def check_subscription(user_id):
+    if not CHANNEL:
+        return True
     try:
-        member = bot.get_chat_member(CHANNEL, user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        status = bot.get_chat_member(CHANNEL, user_id).status
+        if status in ["creator", "administrator", "member"]:
             return True
         return False
     except:
         return False
 
-# /start komandasi
+# API: Xizmatlar
+def get_services():
+    data = {"key": API_KEY, "action": "services"}
+    return requests.post(API_URL, data=data).json()
+
+# API: Buyurtma qo‘yish
+def add_order(service_id, link, quantity):
+    data = {"key": API_KEY, "action": "add", "service": service_id, "link": link, "quantity": quantity}
+    return requests.post(API_URL, data=data).json()
+
+# API: Buyurtma statusi
+def order_status(order_id):
+    data = {"key": API_KEY, "action": "status", "order": order_id}
+    return requests.post(API_URL, data=data).json()
+
+# API: Balans
+def get_balance():
+    data = {"key": API_KEY, "action": "balance"}
+    return requests.post(API_URL, data=data).json()
+
+# /start
 @bot.message_handler(commands=["start"])
 def start_handler(message):
     user_id = message.chat.id
-    if not check_channel(user_id):
-        bot.send_message(user_id, f"📢 Botdan foydalanish uchun kanalimizga obuna bo'ling: @{CHANNEL}")
+    if not check_subscription(user_id):
+        bot.send_message(user_id, f"⚠️ Kanalga obuna bo‘ling: {CHANNEL}")
         return
-    bot.send_message(user_id, "Salom! SMM xizmatlar botiga xush kelibsiz.", reply_markup=main_menu())
+    bot.send_message(user_id, "👋 Assalomu alaykum!\nXizmatlar va balansni ko‘rish uchun menyudan tanlang.", reply_markup=main_menu())
 
 # Inline tugmalar
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    user_id = call.message.chat.id
-
-    if not check_channel(user_id):
-        bot.send_message(user_id, f"📢 Xizmatlardan foydalanish uchun kanalga obuna bo'ling: @{CHANNEL}")
-        return
-
+    chat_id = call.message.chat.id
     if call.data == "services":
-        r = requests.post("https://uzbek-seen.uz/api/v2", data={"key": API_KEY, "action": "services"}).json()
-        msg = "📃 Xizmatlar ro'yxati:\n\n"
-        for s in r:
-            msg += f"{s['service']}. {s['name']} ({s['min']}-{s['max']})\n"
-        bot.send_message(user_id, msg)
-
+        services = get_services()
+        text = "📃 Xizmatlar:\n\n"
+        for s in services:
+            text += f"{s['service']}. {s['name']} - Narxi: {s['rate']} UZS\n"
+        bot.send_message(chat_id, text)
     elif call.data == "balance":
-        r = requests.post("https://uzbek-seen.uz/api/v2", data={"key": API_KEY, "action": "balance"}).json()
-        bot.send_message(user_id, f"💰 Sizning balansingiz: {r['balance']} {r['currency']}")
+        balance = get_balance()
+        bot.send_message(chat_id, f"💰 Sizning balansingiz: {balance['balance']} {balance['currency']}")
 
-    elif call.data == "order":
-        bot.send_message(user_id, "🛒 Buyurtma berish uchun quyidagi formatda yuboring:\nservice_id|link|quantity\nMasalan:\n1|https://t.me/username|100")
-
-# Buyurtma berish
-@bot.message_handler(func=lambda m: "|" in m.text)
-def order_handler(message):
-    user_id = message.chat.id
-    try:
-        service_id, link, quantity = message.text.split("|")
-        r = requests.post("https://uzbek-seen.uz/api/v2", data={
-            "key": API_KEY,
-            "action": "add",
-            "service": service_id.strip(),
-            "link": link.strip(),
-            "quantity": quantity.strip()
-        }).json()
-        if "order" in r:
-            bot.send_message(user_id, f"✅ Buyurtma qabul qilindi. Order ID: {r['order']}")
-        else:
-            bot.send_message(user_id, f"❌ Xatolik yuz berdi: {r}")
-    except Exception as e:
-        bot.send_message(user_id, f"❌ Format xatolik: {e}")
-
-# Webhook Flask
+# Flask webhook
 @server.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
+def getMessage():
     json_str = request.get_data().decode("UTF-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "!", 200
 
 @server.route("/")
-def index():
-    return "Bot ishlayapti ✅", 200
+def webhook():
+    return "Bot ishlayapti! ✅", 200
 
 if __name__ == "__main__":
     server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
