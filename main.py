@@ -1,152 +1,147 @@
-import json
-import aiohttp
-import asyncio
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery
-from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
-from dotenv import load_dotenv
 import os
+import requests
+from flask import Flask, request
+import telebot
+from telebot import types
 
-# ENV yuklash
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_KEY = os.getenv("API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+TOKEN = os.environ.get("TOKEN")
+OWNER = os.environ.get("OWNER")
+GROUP = os.environ.get("GROUP")
+CHANNEL = os.environ.get("CHANNEL")
+API_KEY = os.environ.get("API_KEY")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-dp = Dispatcher()
+bot = telebot.TeleBot(TOKEN)
+server = Flask(__name__)
 
-CHANNELS_FILE = "channels.json"
-API_URL = "https://uzbek-seen.uz/api/v2"
+# Inline va Reply tugmalar
+def inline_menu():
+    menu = types.InlineKeyboardMarkup()
+    menu.add(types.InlineKeyboardButton("💬 Yangi buyurtma", callback_data="NewOrder"))
+    menu.add(
+        types.InlineKeyboardButton("🔵 Admin", url=f"https://t.me/{OWNER}"),
+        types.InlineKeyboardButton("👥 Guruh", url=f"https://t.me/{GROUP}"),
+        types.InlineKeyboardButton("📣 Kanal", url=f"https://t.me/{CHANNEL}")
+    )
+    return menu
 
-# 📌 Kanal ro'yxatini yuklash
-def load_channels():
-    if not os.path.exists(CHANNELS_FILE):
-        return []
-    with open(CHANNELS_FILE, "r") as f:
-        return json.load(f)
+def generate_services_markup(services):
+    markup = types.InlineKeyboardMarkup()
+    for s in services:
+        markup.add(types.InlineKeyboardButton(f"{s['name']} ({s['rate']} UZS)", callback_data=f"service_{s['service']}"))
+    return markup
 
-# 📌 Kanal ro'yxatini saqlash
-def save_channels(channels):
-    with open(CHANNELS_FILE, "w") as f:
-        json.dump(channels, f, indent=4)
+# Foydalanuvchi obuna tekshiruvi
+def check_subscription(user_id):
+    try:
+        status = bot.get_chat_member(CHANNEL, user_id).status
+        return status in ["member", "administrator", "creator"]
+    except:
+        return False
 
-# 📌 Foydalanuvchi obuna bo'lganini tekshirish
-async def check_subscription(user_id):
-    channels = load_channels()
-    not_subscribed = []
-    for channel in channels:
-        try:
-            member = await bot.get_chat_member(channel, user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                not_subscribed.append(channel)
-        except TelegramBadRequest:
-            continue
-    return not_subscribed
-
-# 📌 Start komandasi
-@dp.message(Command("start"))
-async def start_handler(message: Message):
-    not_subscribed = await check_subscription(message.from_user.id)
-    if not_subscribed:
-        kb = InlineKeyboardBuilder()
-        for ch in not_subscribed:
-            kb.button(text=f"👉 {ch}", url=f"https://t.me/{ch[1:]}")
-        kb.button(text="✅ Obuna bo‘ldim", callback_data="check_subs")
-        await message.answer(
-            "❗ Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling:",
-            reply_markup=kb.as_markup()
-        )
-    else:
-        await message.answer("👋 Xush kelibsiz! /services buyrug‘i orqali xizmatlarni ko‘rishingiz mumkin.")
-
-# 📌 Obuna tekshirish tugmasi
-@dp.callback_query(F.data == "check_subs")
-async def check_subs_callback(call: CallbackQuery):
-    not_subscribed = await check_subscription(call.from_user.id)
-    if not_subscribed:
-        kb = InlineKeyboardBuilder()
-        for ch in not_subscribed:
-            kb.button(text=f"👉 {ch}", url=f"https://t.me/{ch[1:]}")
-        kb.button(text="✅ Obuna bo‘ldim", callback_data="check_subs")
-        await call.message.edit_text(
-            "❗ Hali hammasiga obuna bo‘lmadingiz!",
-            reply_markup=kb.as_markup()
-        )
-    else:
-        await call.message.edit_text("✅ Obuna tasdiqlandi! Endi xizmatlardan foydalanishingiz mumkin.")
-
-# 📌 Xizmatlar ro'yxati
-@dp.message(Command("services"))
-async def services_handler(message: Message):
-    not_subscribed = await check_subscription(message.from_user.id)
-    if not_subscribed:
-        await start_handler(message)
-        return
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(API_URL, data={"key": API_KEY, "action": "services"}) as resp:
-            data = await resp.json()
-
-    text = "📋 <b>Xizmatlar ro‘yxati:</b>\n\n"
-    for srv in data[:10]:  # faqat 10 ta xizmat ko‘rsatamiz
-        text += f"🔹 ID: <b>{srv['service']}</b>\n📌 Nomi: {srv['name']}\n💰 Narx: {srv['rate']} UZS\n➖➕ {srv['min']} - {srv['max']}\n\n"
-
-    await message.answer(text)
-
-# 📌 Admin kanal qo‘shishi
-@dp.message(Command("add_channel"))
-async def add_channel_handler(message: Message):
-    if message.from_user.id != ADMIN_ID:
+# Admin kanal/guruh o'rnatish
+@bot.message_handler(commands=["setchannel"])
+def set_channel(message):
+    if str(message.from_user.username) != OWNER:
         return
     args = message.text.split()
-    if len(args) < 2:
-        await message.answer("❗ Foydalanish: /add_channel @kanal")
-        return
-    channel = args[1]
-    channels = load_channels()
-    if channel not in channels:
-        channels.append(channel)
-        save_channels(channels)
-        await message.answer(f"✅ Kanal qo‘shildi: {channel}")
+    if len(args) == 2:
+        new_channel = args[1].replace("@","")
+        os.environ["CHANNEL"] = new_channel
+        global CHANNEL
+        CHANNEL = new_channel
+        bot.send_message(message.chat.id, f"✅ Kanal yangilandi: @{new_channel}")
     else:
-        await message.answer("❗ Bu kanal allaqachon ro‘yxatda bor.")
+        bot.send_message(message.chat.id, "❌ Foydalanish: /setchannel kanal_username")
 
-# 📌 Admin kanal o‘chirish
-@dp.message(Command("del_channel"))
-async def del_channel_handler(message: Message):
-    if message.from_user.id != ADMIN_ID:
+@bot.message_handler(commands=["setgroup"])
+def set_group(message):
+    if str(message.from_user.username) != OWNER:
         return
     args = message.text.split()
-    if len(args) < 2:
-        await message.answer("❗ Foydalanish: /del_channel @kanal")
-        return
-    channel = args[1]
-    channels = load_channels()
-    if channel in channels:
-        channels.remove(channel)
-        save_channels(channels)
-        await message.answer(f"🗑 Kanal o‘chirildi: {channel}")
+    if len(args) == 2:
+        new_group = args[1].replace("@","")
+        os.environ["GROUP"] = new_group
+        global GROUP
+        GROUP = new_group
+        bot.send_message(message.chat.id, f"✅ Guruh yangilandi: @{new_group}")
     else:
-        await message.answer("❗ Bu kanal topilmadi.")
+        bot.send_message(message.chat.id, "❌ Foydalanish: /setgroup guruh_username")
 
-# 📌 Admin kanallarni ko‘rishi
-@dp.message(Command("channels"))
-async def list_channels(message: Message):
-    if message.from_user.id != ADMIN_ID:
+# /start
+@bot.message_handler(commands=["start"])
+def start_handler(message):
+    user_id = message.chat.id
+    if not check_subscription(user_id):
+        bot.send_message(user_id, f"❌ Iltimos, xizmatdan foydalanish uchun @{CHANNEL} kanaliga obuna bo'ling.", reply_markup=inline_menu())
         return
-    channels = load_channels()
-    if not channels:
-        await message.answer("📂 Hech qanday kanal qo‘shilmagan.")
-    else:
-        text = "📌 Majburiy kanallar:\n" + "\n".join([f"👉 {ch}" for ch in channels])
-        await message.answer(text)
+    bot.send_message(user_id, "👋 Salom! Xizmatdan foydalanishingiz mumkin.", reply_markup=inline_menu())
 
-# Run
-async def main():
-    await dp.start_polling(bot)
+# API xizmatlarini olish
+def get_services():
+    url = "https://uzbek-seen.uz/api/v2"
+    params = {"key": API_KEY, "action": "services"}
+    res = requests.get(url, params=params).json()
+    return res
+
+# Buyurtma qo‘yish
+def add_order(service_id, link, quantity):
+    url = "https://uzbek-seen.uz/api/v2"
+    params = {
+        "key": API_KEY,
+        "action": "add",
+        "service": service_id,
+        "link": link,
+        "quantity": quantity
+    }
+    res = requests.post(url, data=params).json()
+    return res
+
+# Buyurtma statusi
+def order_status(order_id):
+    url = "https://uzbek-seen.uz/api/v2"
+    params = {"key": API_KEY, "action": "status", "order": order_id}
+    res = requests.get(url, params=params).json()
+    return res
+
+# Balans
+def get_balance():
+    url = "https://uzbek-seen.uz/api/v2"
+    params = {"key": API_KEY, "action": "balance"}
+    res = requests.get(url, params=params).json()
+    return res.get("balance", "0")
+
+# Inline tugmalar
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    if call.data == "NewOrder":
+        services = get_services()
+        bot.send_message(call.message.chat.id, "💠 Xizmatlar ro‘yxati:", reply_markup=generate_services_markup(services))
+    elif call.data.startswith("service_"):
+        service_id = int(call.data.split("_")[1])
+        bot.send_message(call.message.chat.id, f"✅ Siz {service_id} xizmatini tanladingiz.\nLink va miqdorni yuboring (misol: link quantity)")
+
+# Foydalanuvchi buyurtma ma’lumotini yuborsa
+@bot.message_handler(func=lambda m: True)
+def handle_order(message):
+    try:
+        service_id, link, quantity = map(str, message.text.split())
+        quantity = int(quantity)
+        res = add_order(service_id, link, quantity)
+        bot.send_message(message.chat.id, f"✅ Buyurtma qabul qilindi!\nOrder ID: {res.get('order')}")
+    except:
+        bot.send_message(message.chat.id, "❌ Format xato. Misol: 1 https://t.me/channel 100")
+
+# Flask webhook
+@server.route(f"/{TOKEN}", methods=["POST"])
+def getMessage():
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@server.route("/")
+def webhook():
+    return "Bot ishlayapti! ✅", 200
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
