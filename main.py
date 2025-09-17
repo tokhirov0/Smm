@@ -3,140 +3,145 @@ import telebot
 from flask import Flask, request
 import requests
 from dotenv import load_dotenv
-import json
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 API_KEY = os.getenv("API_KEY")
+WEBHOOK_URL = f"https://smm-4.onrender.com/{BOT_TOKEN}"  # Render URL bilan almashtiring
 
 bot = telebot.TeleBot(BOT_TOKEN)
-server = Flask(__name__)
+app = Flask(__name__)
 
-# Kanallar va guruhlar (admin bot orqali qo‘shadi)
-channels = []
-groups = []
+# --- Kanal va guruhlar ro'yxati ---
+channels = {}  # {channel_id: {"name": "Kanal nomi"}}
+groups = {}    # {group_id: {"name": "Guruh nomi"}}
 
-# Funksiya: kanal qo‘shish
-@bot.message_handler(commands=['addchannel'])
-def add_channel(message):
-    if message.from_user.id == ADMIN_ID:
-        try:
-            channel_link = message.text.split()[1]
-            channels.append(channel_link)
-            bot.reply_to(message, f"✅ Kanal qo‘shildi: {channel_link}")
-        except IndexError:
-            bot.reply_to(message, "❌ Kanal linkini yozing.")
-
-# Funksiya: kanal o‘chirish
-@bot.message_handler(commands=['delchannel'])
-def del_channel(message):
-    if message.from_user.id == ADMIN_ID:
-        try:
-            channel_link = message.text.split()[1]
-            if channel_link in channels:
-                channels.remove(channel_link)
-                bot.reply_to(message, f"✅ Kanal o‘chirildi: {channel_link}")
-            else:
-                bot.reply_to(message, "❌ Kanal topilmadi.")
-        except IndexError:
-            bot.reply_to(message, "❌ Kanal linkini yozing.")
-
-# Funksiya: guruh qo‘shish
-@bot.message_handler(commands=['addgroup'])
-def add_group(message):
-    if message.from_user.id == ADMIN_ID:
-        try:
-            group_link = message.text.split()[1]
-            groups.append(group_link)
-            bot.reply_to(message, f"✅ Guruh qo‘shildi: {group_link}")
-        except IndexError:
-            bot.reply_to(message, "❌ Guruh linkini yozing.")
-
-# Funksiya: guruh o‘chirish
-@bot.message_handler(commands=['delgroup'])
-def del_group(message):
-    if message.from_user.id == ADMIN_ID:
-        try:
-            group_link = message.text.split()[1]
-            if group_link in groups:
-                groups.remove(group_link)
-                bot.reply_to(message, f"✅ Guruh o‘chirildi: {group_link}")
-            else:
-                bot.reply_to(message, "❌ Guruh topilmadi.")
-        except IndexError:
-            bot.reply_to(message, "❌ Guruh linkini yozing.")
-
-# Foydalanuvchi buyurtma qo‘shish
-@bot.message_handler(commands=['order'])
-def add_order(message):
-    try:
-        parts = message.text.split()
-        service_id = parts[1]
-        link = parts[2]
-        quantity = parts[3]
-
-        url = "https://uzbek-seen.uz/api/v2"
-        data = {
-            "key": API_KEY,
-            "action": "add",
-            "service": service_id,
-            "link": link,
-            "quantity": quantity
-        }
-        response = requests.post(url, data=data).json()
-        bot.reply_to(message, f"✅ Buyurtma qo‘shildi: {response}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Xatolik: {e}")
-
-# Foydalanuvchi balansni tekshirish
-@bot.message_handler(commands=['balance'])
-def get_balance(message):
-    try:
-        url = "https://uzbek-seen.uz/api/v2"
-        data = {
-            "key": API_KEY,
-            "action": "balance"
-        }
-        response = requests.post(url, data=data).json()
-        bot.reply_to(message, f"💰 Balans: {response['balance']} {response['currency']}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Xatolik: {e}")
-
-# Kanalga obuna tekshirish
-def check_subscription(user_id):
-    for ch in channels:
-        try:
-            member = bot.get_chat_member(ch, user_id)
-            if member.status in ["left", "kicked"]:
-                return False
-        except:
-            return False
-    return True
-
-# Start komandasi
-@bot.message_handler(commands=['start'])
-def start(message):
-    if not check_subscription(message.from_user.id):
-        bot.send_message(message.chat.id, "❗ Xizmatdan foydalanish uchun kanallarga obuna bo‘ling.")
-    else:
-        bot.send_message(message.chat.id, "✅ Xush kelibsiz! Buyurtmalarni qo‘shishingiz mumkin.")
-
-# Flask webhook
-@server.route(f"/{BOT_TOKEN}", methods=['POST'])
+# --- Flask route webhook ---
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "!", 200
 
-@server.route("/")
-def index():
-    return "Bot ishlayapti!", 200
+# --- Start va admin menu ---
+@bot.message_handler(commands=["start"])
+def start(message):
+    if message.from_user.id == ADMIN_ID:
+        bot.send_message(message.chat.id, "Admin panelga xush kelibsiz!\n"
+                                          "/add_channel - Kanal qo'shish\n"
+                                          "/del_channel - Kanal o'chirish\n"
+                                          "/add_group - Guruh qo'shish\n"
+                                          "/del_group - Guruh o'chirish\n"
+                                          "/services - Xizmatlarni ko'rish\n"
+                                          "/order - Buyurtma qo'shish")
+    else:
+        bot.send_message(message.chat.id, "Salom! Xizmatdan foydalanish uchun kanal va guruhlarga obuna bo'ling.")
 
-# Botni webhook bilan ishga tushurish
+# --- Kanal qo'shish ---
+@bot.message_handler(commands=["add_channel"])
+def add_channel(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    msg = bot.send_message(message.chat.id, "Kanal ID yoki username kiriting:")
+    bot.register_next_step_handler(msg, save_channel)
+
+def save_channel(message):
+    channel_id = message.text
+    channels[channel_id] = {"name": channel_id}
+    bot.send_message(message.chat.id, f"Kanal qo'shildi: {channel_id}")
+
+# --- Kanal o'chirish ---
+@bot.message_handler(commands=["del_channel"])
+def del_channel(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    msg = bot.send_message(message.chat.id, "O'chirish uchun kanal ID yoki username kiriting:")
+    bot.register_next_step_handler(msg, remove_channel)
+
+def remove_channel(message):
+    channel_id = message.text
+    if channel_id in channels:
+        channels.pop(channel_id)
+        bot.send_message(message.chat.id, f"Kanal o'chirildi: {channel_id}")
+    else:
+        bot.send_message(message.chat.id, "Kanal topilmadi!")
+
+# --- Guruh qo'shish ---
+@bot.message_handler(commands=["add_group"])
+def add_group(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    msg = bot.send_message(message.chat.id, "Guruh ID yoki username kiriting:")
+    bot.register_next_step_handler(msg, save_group)
+
+def save_group(message):
+    group_id = message.text
+    groups[group_id] = {"name": group_id}
+    bot.send_message(message.chat.id, f"Guruh qo'shildi: {group_id}")
+
+# --- Guruh o'chirish ---
+@bot.message_handler(commands=["del_group"])
+def del_group(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    msg = bot.send_message(message.chat.id, "O'chirish uchun guruh ID yoki username kiriting:")
+    bot.register_next_step_handler(msg, remove_group)
+
+def remove_group(message):
+    group_id = message.text
+    if group_id in groups:
+        groups.pop(group_id)
+        bot.send_message(message.chat.id, f"Guruh o'chirildi: {group_id}")
+    else:
+        bot.send_message(message.chat.id, "Guruh topilmadi!")
+
+# --- Xizmatlarni ko'rish ---
+@bot.message_handler(commands=["services"])
+def services(message):
+    url = "https://uzbek-seen.uz/api/v2"
+    params = {"key": API_KEY, "action": "services"}
+    r = requests.get(url, params=params)
+    if r.status_code == 200:
+        data = r.json()
+        text = ""
+        for s in data:
+            text += f"{s['service']}. {s['name']} ({s['min']}-{s['max']}) - {s['rate']} UZS\n"
+        bot.send_message(message.chat.id, text)
+    else:
+        bot.send_message(message.chat.id, "Xizmatlarni olishda xato!")
+
+# --- Buyurtma qo'shish ---
+@bot.message_handler(commands=["order"])
+def add_order(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    msg = bot.send_message(message.chat.id, "Buyurtma: service_id link quantity (misol: 1 https://t.me/username 100)")
+    bot.register_next_step_handler(msg, create_order)
+
+def create_order(message):
+    try:
+        service, link, quantity = message.text.split()
+        url = "https://uzbek-seen.uz/api/v2"
+        params = {
+            "key": API_KEY,
+            "action": "add",
+            "service": service,
+            "link": link,
+            "quantity": quantity
+        }
+        r = requests.post(url, data=params)
+        if r.status_code == 200:
+            bot.send_message(message.chat.id, f"Buyurtma qo'shildi: {r.json().get('order')}")
+        else:
+            bot.send_message(message.chat.id, "Buyurtma qo'shishda xato!")
+    except:
+        bot.send_message(message.chat.id, "Format xato! Misol: 1 https://t.me/username 100")
+
+# --- Bot Flask serverini ishga tushurish ---
 if __name__ == "__main__":
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://YOUR_RENDER_URL/{BOT_TOKEN}")
-    server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
